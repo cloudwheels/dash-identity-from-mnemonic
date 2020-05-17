@@ -1,0 +1,247 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+
+<head>
+
+    <meta content="text/html; charset=utf-8" http-equiv="content-type">
+    <title>Get Dash Identity From Mnemonic</title>
+
+    <link rel="stylesheet" type="text/css" href="./styles.css">
+
+    <script src="https://unpkg.com/dash"></script>
+    <script src="bs58.bundle.js"></script>
+    <script src="sha256.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.4.1.js"></script>
+    <script>
+        /*
+        Copyright 2020 @cloudwheels
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+        */
+
+
+
+        function getIdentityFromMnemonic(mnemonic, fetchIdenityObjects) {
+            return new Promise((resolve, reject) => {
+                try {
+
+
+                    const byteString = (n) => {
+                        if (n < 0 || n > 255 || n % 1 !== 0) {
+                            throw new Error(n + " does not fit in a byte");
+                        }
+                        return ("000000000" + n.toString(2)).substr(-8)
+                    }
+
+                    const getOutpoint = (txHash, byteStrIndex) => {
+
+                        const outPointHex = txHash + byteStrIndex;
+
+                        if (outPointHex.length % 2 !== 0) {
+                            throw new Error(`The outpoint length "${outPointHex}" is not divisible by 2.`)
+                        }
+
+                        const fromHexString = hexString =>
+                            new Uint8Array(hexString.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+
+                        const outpointBuffer = fromHexString(outPointHex);
+
+                        return outpointBuffer;
+                    }
+
+
+
+                    const client = new Dash.Client({
+                        network: "testnet",
+                        mnemonic: mnemonic,
+                    });
+
+
+
+                    client.isReady().then(async () => {
+                        const {
+                            account,
+                            platform
+                        } = client;
+
+                        const transactionsMap = await account.getTransactions();
+                        console.log('transactionsMap');
+                        console.dir(JSON.stringify(transactionsMap));
+
+                        const transactions = Object.keys(transactionsMap).map((txid) => {
+                            return transactionsMap[txid];
+                        });
+
+                        const outputs = transactions.reduce((outputs, transaction) => {
+                            const preparedOutputs = transaction.outputs.map((output, index) => {
+
+                                console.log('output', output);
+                                console.log('index', index);
+                                byteStrIndex = byteString(index);
+                                console.log('byteStrIndex', byteStrIndex);
+                                let isBurnOutput = false;
+                                let txHash = transaction.hash;
+                                console.log('txHash', txHash);
+                                const outPointBuffer = getOutpoint(txHash, byteStrIndex);
+                                console.log('outPointBuffer', outPointBuffer);
+                                const outputHasTwoChunks = output.script.chunks.length === 2;
+                                console.log('outputHasTwoChunks', outputHasTwoChunks);
+                                if (outputHasTwoChunks) {
+                                    console.log('output.script', output.script);
+                                    const isFirstOpcodeOP_RETURN = output.script.chunks[0].opcodenum === 106;
+                                    const isSecondOpcodePubKey = output.script.chunks[1].len === 20;
+                                    console.log('isSecondOpcodePubKey', isSecondOpcodePubKey);
+                                    isBurnOutput = isFirstOpcodeOP_RETURN && isSecondOpcodePubKey;
+                                    console.log('isBurnOutput', isBurnOutput);
+                                }
+
+                                return {
+                                    outPointBuffer,
+                                    isBurnOutput: isBurnOutput
+                                };
+                            });
+                            return outputs.concat(preparedOutputs);
+                        }, []);
+
+                        console.log('OUTPUTS:');
+                        console.dir(JSON.stringify(outputs));
+
+                        const burnOutputs = outputs.filter((output) => output.isBurnOutput);
+                        console.log('burnOutputs', burnOutputs);
+                        const identityIds = burnOutputs.map(/*async*/ (burnOutput) => {
+
+                            let hash1 = sha256.arrayBuffer(new Uint8Array(burnOutput.outPointBuffer)) //await crypto.subtle.digest('SHA-256', burnOutput.outPointBuffer);
+                            console.log('hash1', hash1);
+                            let hash2 = sha256.arrayBuffer(new Uint8Array(hash1)) //await crypto.subtle.digest('SHA-256', hash1);
+                            console.log('hash2', hash2);
+                            let identityId = bs58.encode(new Uint8Array(hash2));
+                            console.log('identityId', identityId);
+                            return identityId;
+                        });
+                        //Promise.all(identityIds).then((identities) => {
+                            console.log('identities:');
+                            //console.dir(identities);
+                            console.dir(identityIds);
+                            console.log('fetch Objects?:', fetchIdenityObjects)
+                            if (fetchIdenityObjects=='false') {
+                                //resolve(identities)
+                                resolve(identityIds)
+                            } else {
+                                const arrIdentities =  identityIds.map(async id => { //identities.map(async id => {
+                                    let fullId = await platform.identities.get(id)
+                                    return fullId
+                                });
+                                Promise.all(arrIdentities).then((result) => {
+                                    console.log('result:');
+                                    console.dir(result);
+                                    resolve(result);
+
+                                });
+                            }
+                        //});
+
+                    });
+
+                } catch (e) {
+                    reject(e)
+                }
+            });
+        }
+    </script>
+
+
+    <script>
+          $(document).ready(function() {
+            
+            $("#fetchObjects").attr('value', false);
+          
+            $("#fetchObjects").on('change', function() {
+            if ($(this).is(':checked')) {
+              $(this).attr('value', true);
+            } else {
+              $(this).attr('value', false);
+            }
+          });
+          
+
+            $("#submit").click(function() {
+
+                try {
+
+                    var mnemonic
+                    if(!$("#mnemonic").val()){mnemonic=$("#mnemonic").attr('placeholder')}else{mnemonic=$("#mnemonic").val()}
+                    var fetchObjects = $('#fetchObjects').val()
+
+                    getIdentityFromMnemonic(mnemonic, fetchObjects)
+                        .then((result) => {
+                            console.log("Success!")
+                            console.dir(result)
+                            $("#result").html("Success:<br/>" + result)
+                            if(fetchObjects=='true'){$("#result").append("<div><p>Identity Object Value:</p>"+JSON.stringify(result)+"</div>")}
+                            
+                        })
+                        .catch((error) => {
+                            console.log("Error:", error)
+                            $("#result").html("Error:<br/>" + error)
+                        });
+
+
+                } catch (e) {
+                    $("#result").html("Error:<br/> " + e)
+                }
+
+            });
+
+        });
+    </script>
+
+</head>
+
+<body>
+  <h1>Get Registered Dash Platform Identities for an Account Mnenomic</h1>
+    <div>
+      <p>
+        <a href="https://github.com/cloudwheels/dash-identity-from-mnemonic">https://github.com/cloudwheels/dash-identity-from-mnemonic</a>
+      </p>
+    </div>
+    <div>
+        <p>
+            Enter mnemonic or click submit to use the test placeholder value to find Platform identities registered by that account.
+        </p>
+        <p>
+            The placeholder should return: 8xMwTCEfx41He8gJQk7bT4MXxu64CXJ4eoqdFAJYrZUg
+        </p>
+        <p>
+          By default the code will fetch Identity ID values. Check &quot;Fetch identity Objects?&quot; to fetch the Identity object from the platform.
+        </p>
+        <p>
+          Please monitor the console for errors (especially a CORS error from the DashJS code) and try again if it doesn't work! Only tested (briefly!) in Chrome Browser
+        </p>
+    </div>
+
+    <div>
+      <form>
+          <div><label for="mnemonic">Mnemonic</label><br/>
+              <textarea style="height:100px;width:150px" placeholder="reason ordinary reward number true unknown govern valve enact olympic recycle ask" id="mnemonic"></textarea><br/>
+              <label for="fetchObjects">Fetch identity Objects?</label><input type="checkbox" id="fetchObjects" label="Fetch identity Objects?" /><br/>
+              <input type="button" value="Submit" id="submit" />
+  
+          </div>
+      </form>
+    </div>
+
+    <h2>Result:</h2>
+    <div id="result">
+      
+    </div>
+    <br/><br/><hr/>
+    <p>
+    Original implementation <a href="https://gist.github.com/dashameter/69b823de831395ff4e1c95a2951ed6e3">here</a>
+    </p>
+
+</body>
+</html>
